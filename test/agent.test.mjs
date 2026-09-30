@@ -6,7 +6,8 @@ const AGENT = new URL('../src/remote/agent.py', import.meta.url).pathname;
 const call = (request) => JSON.parse(execFileSync('python3', [AGENT], { input: JSON.stringify(request), encoding: 'utf8' }));
 
 test('agent compiles', () => {
-  execFileSync('python3', ['-m', 'py_compile', AGENT]);
+  // compile() rather than py_compile: no __pycache__ writes outside the checkout.
+  execFileSync('python3', ['-c', 'import sys; compile(open(sys.argv[1]).read(), sys.argv[1], "exec")', AGENT]);
 });
 
 test('hello answers with identity on this machine', () => {

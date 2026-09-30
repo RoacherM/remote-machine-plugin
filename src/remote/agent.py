@@ -29,6 +29,8 @@ KILL_GRACE_S = 3.0
 MAX_READ_BYTES = 4 * 1024 * 1024
 MAX_STATUS_WAIT_S = 20.0
 MAX_JOB_ID_LEN = 80
+# The login umask, before main() makes the agent's own files private; user commands run with it.
+USER_UMASK = 0o022
 
 
 class Fail(Exception):
@@ -246,6 +248,7 @@ def op_exec_start(req):
         "job_id": req["job_id"], "owner": req.get("owner"), "computer_id": req.get("computer_id"),
         "argv": argv, "shell_script": script, "shell": req.get("shell") or "/bin/bash",
         "cwd": os.path.realpath(cwd), "timeout_s": timeout_s, "created_ms": now_ms(), "boot_id": boot_id(),
+        "umask": USER_UMASK,
     }
     write_json_atomic(os.path.join(directory, "meta.json"), meta)
     subprocess.Popen(
@@ -270,6 +273,7 @@ def supervise(directory):
     err = open(os.path.join(directory, "stderr"), "wb")
     command = meta["argv"] if meta.get("argv") else [meta.get("shell") or "/bin/bash", "-c", meta["shell_script"]]
     try:
+        os.umask(meta.get("umask", 0o022))
         child = subprocess.Popen(command, cwd=meta["cwd"], stdin=subprocess.DEVNULL, stdout=out, stderr=err,
                                  start_new_session=True, close_fds=True)
     except OSError as error:
@@ -286,6 +290,10 @@ def supervise(directory):
     while True:
         code = child.poll()
         if code is not None:
+            # A cancel request can land between two polls with its signal already delivered (the child may
+            # also exit 0 from a TERM trap); the recorded exit code/signal still says how it ended.
+            if reason is None and os.path.exists(cancel_path):
+                reason = "cancelled"
             break
         if reason is None and os.path.exists(cancel_path):
             reason = "cancelled"
@@ -460,6 +468,8 @@ def op_file_write(req):
         raise Fail("conflict", "file changed since it was read (sha256 mismatch)")
     fd, tmp = tempfile.mkstemp(dir=parent, prefix=".dsh-write-")
     try:
+        # mkstemp makes 0600 files: keep an overwritten file's mode, give new ones the login umask.
+        os.chmod(tmp, (os.stat(target).st_mode & 0o7777) if existed else (0o666 & ~USER_UMASK))
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
             handle.flush()
@@ -589,6 +599,9 @@ OPS = {
 
 
 def main():
+    global USER_UMASK
+    # Job output, screenshots and state are private to the remote user.
+    USER_UMASK = os.umask(0o077)
     if len(sys.argv) == 3 and sys.argv[1] == "--supervise":
         supervise(sys.argv[2])
         return
