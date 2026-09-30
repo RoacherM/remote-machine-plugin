@@ -110,10 +110,13 @@ def group_alive(pgid):
 
 
 def signal_group(pgid, sig):
+    """True if the signal was delivered. EPERM (macOS while the group's members are exiting; Linux when
+    the group holds another user's process, e.g. after sudo) is "not delivered", never an exception:
+    callers keep waiting, and group_alive still counts such a group as alive, so nothing is confirmed."""
     try:
         os.killpg(pgid, sig)
         return True
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         return False
 
 
@@ -675,7 +678,8 @@ def op_cua(req):
     # context of earlier calls (zoom after get_window_state fails with screenshot_context_missing).
     arguments["session"] = req["session"]
     image_path = None
-    if "screenshot_out_file" in props:
+    # An output file forces a capture, so leave it out when the caller turned screenshots off.
+    if "screenshot_out_file" in props and arguments.get("include_screenshot") is not False:
         os.makedirs(SHOTS_DIR, mode=0o700, exist_ok=True)
         image_path = os.path.join(SHOTS_DIR, uuid.uuid4().hex + ".png")
         arguments["screenshot_out_file"] = image_path

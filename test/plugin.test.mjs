@@ -255,6 +255,8 @@ test('cua_call: a Cua session the Driver ended is started again, once, and the c
 });
 
 test('cua_call: zoom runs in the plugin session after get_window_state and comes back as an image', async () => {
+  const bare = await run('computer_cua_call', { computer_id: 'box', tool: 'get_window_state', arguments: { pid: 42, window_id: 7, include_screenshot: false } });
+  assert.equal(bare.attachment, undefined, 'include_screenshot:false means no image');
   const state = await run('computer_cua_call', { computer_id: 'box', tool: 'get_window_state', arguments: { pid: 42, window_id: 7 } });
   assert.equal(state.attachment.mediaType, 'image/png');
   const zoom = await run('computer_cua_call', { computer_id: 'box', tool: 'zoom', arguments: { window_id: 7, x1: 0, y1: 0, x2: 2, y2: 2 } });

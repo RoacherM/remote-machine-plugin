@@ -22,7 +22,8 @@ SCHEMAS = {
         "pid": {"type": "integer"}, "window_id": {"type": "integer"}, "x1": {"type": "number"}, "y1": {"type": "number"},
         "x2": {"type": "number"}, "y2": {"type": "number"}}},
     "get_window_state": {"type": "object", "additionalProperties": False, "required": ["pid", "window_id"], "properties": {
-        "pid": {"type": "integer"}, "window_id": {"type": "integer"}, "screenshot_out_file": {"type": "string"}, "session": {"type": "string"}}},
+        "pid": {"type": "integer"}, "window_id": {"type": "integer"}, "screenshot_out_file": {"type": "string"},
+        "include_screenshot": {"type": "boolean"}, "session": {"type": "string"}}},
     "get_accessibility_tree": {"type": "object", "additionalProperties": False, "properties": {}},
 }
 
@@ -89,12 +90,13 @@ def main():
             return 0
         captured = os.path.join(os.path.expanduser("~"), "cua-window-captures")
         if tool == "get_window_state":
-            with open(arguments["screenshot_out_file"], "wb") as handle:
-                handle.write(png(4, 3))
+            if arguments.get("screenshot_out_file"):
+                with open(arguments["screenshot_out_file"], "wb") as handle:
+                    handle.write(png(4, 3))
             with open(captured, "a") as handle:
                 handle.write("%s %s\n" % (session, arguments["window_id"]))
             print(json.dumps({"window_id": arguments["window_id"], "snapshot_id": "s1", "capture_id": "capture_win_1",
-                              "screenshot_file_path": arguments["screenshot_out_file"], "elements": []}))
+                              "screenshot_file_path": arguments.get("screenshot_out_file"), "elements": []}))
             return 0
         if tool == "zoom":
             try:
