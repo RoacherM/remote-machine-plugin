@@ -217,7 +217,16 @@ TextEdit instance opened on a test file):
 | `hotkey cmd+a` in the background | `unverifiable`, no effect seen; the Driver suggests `delivery_mode: foreground`, not tried because it takes focus on a Mac someone is using |
 
 `capabilities.input` for `macmini` is still `false` in the profile until these are rerun through the
-plugin after a DSH restart.
+plugin on an unlocked screen.
+
+After the DSH restart (2026-10-01) through the real tools: `launch_app` on `macmini` works with input off;
+`computer_screenshot` returns lossless JSON with `frame_scale 1.6 (derived …)`. The Mac mini had been
+idle past its 300 s lock delay (display sleep 5 min): the Driver then captures an all-black frame and
+window captures fail. `caffeinate -u` does not help, and the agent cannot unlock it (that needs the
+password at the machine). Since `a43137b` the agent checks the console session
+(`CGSSessionScreenIsLocked` from `ioreg`) and fails with `screen_locked` instead of passing a black
+image to the model. Remote use of a Mac therefore needs it unlocked: someone at the machine, or a
+longer lock delay chosen by its owner.
 
 Not usable yet:
 
