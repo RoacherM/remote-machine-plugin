@@ -20,8 +20,8 @@ reaches computers over SSH. This repository is the plugin root.
 - `src/remote/agent.py` — remote executor, Python 3 standard library only. One JSON request on stdin, one
   JSON response on stdout (`{ok:true,result}` / `{ok:false,error:{code,message}}`). Ops: `hello`,
   `exec_start`, `exec_status`, `exec_cancel`, `file_read`, `file_write`, `screenshot`, `cua`, `cua_schema`,
-  `end_sessions`. Jobs run under a detached supervisor, so a dropped SSH connection neither kills nor
-  cancels them; state lives in `~/.local/state/dsh-computer/jobs/<job_id>/` (mode 0700).
+  `end_sessions`, `prune`. Jobs run under a detached supervisor, so a dropped SSH connection neither kills
+  nor cancels them; state lives in `~/.local/state/dsh-computer/jobs/<job_id>/` (mode 0700).
 - `src/host/transport.js` — host side of the SSH transport (`createTransport()` → `call`, `startJob`).
 
 ## Tools
@@ -87,6 +87,14 @@ any session's screenshots, which is the same trust boundary as the rest of the D
 - `exec_cancel` answers `confirmed` only when the job is recorded as cancelled **and** its process group
   is gone; `cancelling` while it is still alive; `not_running` if it had already ended; `unknown`
   otherwise. TERM is escalated to KILL after 3 s.
+- Job housekeeping: `exec_start`, after its job has started, prunes at most once an hour (stamp
+  `jobs/.pruned`; a failure never fails the start). A job directory, output included, is removed 7 days
+  after the job ended (a `lost` job counts from its creation, a half-created directory without
+  `meta.json` from its mtime). Running or starting jobs, and finished jobs whose process group is still
+  alive (e.g. `server &` left behind), are never removed. Screenshot files an agent died holding
+  (`shots/`, older than 1 h) are removed too. `exec_status` on a pruned job is `job_not_found`, saying
+  that finished jobs are removed after 7 days. The `prune` op (`retention_s`, never below 300 s so a job
+  being created right now is safe) is for tests and maintenance; no tool exposes it to the model.
 
 ## Configuration
 
@@ -124,6 +132,8 @@ cua-driver 0.30.4, `dsh-cua-driver.service` active) with `npm run test:live`:
 - cancel is `confirmed`, and an independent probe job confirms the process group is gone; a job that
   ignores SIGTERM is killed and reported with `signal: SIGKILL`;
 - jobs are bound to their owner (another owner gets `job_not_owned`);
+- `prune` removes a job backdated to have ended 8 days ago (it is then `job_not_found`) and keeps a
+  running one, which is then cancelled `confirmed`;
 - 4 KiB binary file round trip with matching sha256; reads outside `fileRoots` are refused;
 - Cua `get_desktop_state` screenshot: PNG 1280×804 of a 1512×950 display, `frame_scale` 1.18125, with
   `capture_id`; the Cua session used is ended afterwards.
@@ -143,6 +153,9 @@ plugin entry and the panel routes run against it plus `test/fixtures/fake-cua-dr
 schema, session end). `test/client.test.mjs` loads `client.js` through a stand-in
 `window.__ModuleLoader__` with a minimal React (createElement + hooks) and `fetch` wired to the real
 routes: it checks the registrations, the tab's status/refresh/switch behaviour and the tool card.
+`test/prune.test.mjs` runs the agent under a temporary `HOME` with backdated jobs: finished, running,
+exited-with-a-surviving-process-group, lost after a reboot, half-created, and stale screenshot files, plus
+the once-an-hour trigger from `exec_start`.
 
 Fixed while testing: a cancel whose SIGTERM landed between two supervisor polls was reported as
 `finished_before_cancel`; job output and agent state were world-readable; files created by
@@ -163,10 +176,13 @@ Not usable yet:
   tools are only exercised as `capability_unavailable`. Of the Cua tools only `get_desktop_state` and
   `list_windows` have run on a real machine.
 - macOS remotes are untested (the offline suite runs the agent on macOS locally only).
-- Job directories are never garbage-collected.
+- The 7-day retention and the 1-hour prune interval are fixed in the agent, not configurable. The
+  7-day expiry itself has only been exercised with backdated job files, not by waiting a week.
+- Old agent versions (`agent-<sha256>.py` from earlier plugin releases) are not removed; each is ~30 KB.
 
 ## Checks
 
 - `npm test` — offline, must pass without any remote computer.
 - `npm run test:live` — `DSH_REMOTE_LIVE=1`; host from `DSH_REMOTE_LIVE_HOST` (default `omarchy`). Creates
   files only under `~/dsh-remote-test/<run>/` and `~/.local/state/dsh-computer/` and removes them after.
+  Its `prune` call also removes any other job there that ended more than 7 days ago.

@@ -15,6 +15,7 @@ import platform
 import pwd
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,14 @@ KILL_GRACE_S = 3.0
 MAX_READ_BYTES = 4 * 1024 * 1024
 MAX_STATUS_WAIT_S = 20.0
 MAX_JOB_ID_LEN = 80
+# Finished jobs (output included) are removed this long after they ended; running jobs never are.
+JOB_RETENTION_S = 7 * 24 * 3600
+MIN_RETENTION_S = 300
+# exec_start prunes at most this often; the stamp's name cannot be a job id.
+PRUNE_INTERVAL_S = 3600
+PRUNE_STAMP = ".pruned"
+# Screenshot files are handed back in the same call; one this old was left by an agent that died.
+STALE_SHOT_S = 3600
 # The login umask, before main() makes the agent's own files private; user commands run with it.
 USER_UMASK = 0o022
 
@@ -194,7 +203,8 @@ def load_job(req):
     directory = job_dir(req.get("job_id"))
     meta = read_json(os.path.join(directory, "meta.json"))
     if meta is None:
-        raise Fail("job_not_found", "no job %s on this computer" % req.get("job_id"))
+        raise Fail("job_not_found", "no job %s on this computer (finished jobs are removed %d days after they end)"
+                   % (req.get("job_id"), JOB_RETENTION_S // 86400))
     if meta.get("owner") != req.get("owner"):
         raise Fail("job_not_owned", "job %s belongs to another DSH session" % req.get("job_id"))
     return directory, meta
@@ -262,8 +272,90 @@ def op_exec_start(req):
             break
         time.sleep(0.05)
     state = job_state(directory, meta)
+    # After the job has started, so housekeeping never delays or blocks it.
+    maybe_prune()
     return {"job_id": req["job_id"], "state": state["state"], "pid": (state["started"] or {}).get("pid"), "cwd": meta["cwd"],
             "exit": state["exit"]}
+
+
+def prune_state(retention_s):
+    """Removes jobs that ended more than `retention_s` ago, and screenshot files left by dead agents.
+
+    A job is kept while it is running or starting and while its process group is still alive. A job that
+    never recorded an end (lost) counts from its creation; a directory without meta.json (a start that
+    died half-way) from its mtime. `retention_s` is at least MIN_RETENTION_S so a job that is being
+    created right now (meta written, supervisor not yet up, so it looks lost) is never removed.
+    """
+    retention_s = max(float(retention_s), MIN_RETENTION_S)
+    now = time.time()
+    removed = []
+    kept = 0
+    try:
+        names = sorted(os.listdir(JOBS_DIR))
+    except OSError:
+        names = []
+    for name in names:
+        try:
+            directory = job_dir(name)
+        except Fail:
+            continue  # the prune stamp and anything else that cannot be a job id
+        try:
+            if not stat.S_ISDIR(os.lstat(directory).st_mode):
+                continue
+            meta = read_json(os.path.join(directory, "meta.json"))
+            if meta is None:
+                ended_s = os.lstat(directory).st_mtime
+            else:
+                state = job_state(directory, meta)
+                started = state["started"]
+                if state["state"] in ("running", "starting") or (started is not None and group_alive(started["pgid"])):
+                    kept += 1
+                    continue
+                ended_s = ((state["exit"] or {}).get("finished_ms") or meta.get("created_ms") or 0) / 1000.0
+        except OSError:
+            continue
+        if now - ended_s < retention_s:
+            kept += 1
+            continue
+        shutil.rmtree(directory, ignore_errors=True)
+        if not os.path.lexists(directory):
+            removed.append(name)
+    shots_removed = 0
+    try:
+        shot_names = os.listdir(SHOTS_DIR)
+    except OSError:
+        shot_names = []
+    for name in shot_names:
+        path = os.path.join(SHOTS_DIR, name)
+        try:
+            info = os.lstat(path)
+            if stat.S_ISREG(info.st_mode) and now - info.st_mtime >= STALE_SHOT_S:
+                os.unlink(path)
+                shots_removed += 1
+        except OSError:
+            continue
+    return {"removed": removed, "kept": kept, "shots_removed": shots_removed, "retention_s": retention_s}
+
+
+def maybe_prune():
+    """Prunes with the default retention at most once per PRUNE_INTERVAL_S. Never fails the caller."""
+    stamp = os.path.join(JOBS_DIR, PRUNE_STAMP)
+    try:
+        if time.time() - os.path.getmtime(stamp) < PRUNE_INTERVAL_S:
+            return None
+    except OSError:
+        pass
+    try:
+        with open(stamp, "a"):
+            pass
+        os.utime(stamp, None)
+        return prune_state(JOB_RETENTION_S)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def op_prune(req):
+    return prune_state(req.get("retention_s") if req.get("retention_s") is not None else JOB_RETENTION_S)
 
 
 def supervise(directory):
@@ -594,7 +686,7 @@ def op_end_sessions(req):
 OPS = {
     "hello": op_hello, "exec_start": op_exec_start, "exec_status": op_exec_status, "exec_cancel": op_exec_cancel,
     "file_read": op_file_read, "file_write": op_file_write, "screenshot": op_screenshot, "cua": op_cua,
-    "cua_schema": op_cua_schema, "end_sessions": op_end_sessions,
+    "cua_schema": op_cua_schema, "end_sessions": op_end_sessions, "prune": op_prune,
 }
 
 

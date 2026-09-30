@@ -91,6 +91,23 @@ describe(`live against ssh ${HOST}`, { skip: !LIVE && 'set DSH_REMOTE_LIVE=1 to 
       (error) => error.code === 'job_not_owned');
   });
 
+  test('prune removes a job that ended past retention and keeps a running one', async () => {
+    const old = await transport.startJob(computer, { job_id: `live-${run}-old`, owner, cwd: root, argv: ['true'] });
+    await collect(old.job_id);
+    const running = await transport.startJob(computer, { job_id: `live-${run}-keep`, owner, cwd: root, argv: ['sleep', '60'] });
+    // Pretend both started and the first ended 8 days ago, edited by a job so nothing goes on the ssh command line.
+    const backdate = 'import json,os,sys,time\nd=os.path.expanduser("~/.local/state/dsh-computer/jobs")\nthen=int(time.time()*1000)-8*86400000\nfor j in sys.argv[1:]:\n  for n,k in (("meta.json","created_ms"),("exit.json","finished_ms")):\n    p=os.path.join(d,j,n)\n    if os.path.exists(p):\n      v=json.load(open(p)); v[k]=then; json.dump(v,open(p,"w"))\n';
+    const edit = await transport.startJob(computer, { job_id: `live-${run}-backdate`, owner, cwd: root, argv: ['python3', '-c', backdate, old.job_id, running.job_id] });
+    assert.equal((await collect(edit.job_id)).exit.exit_code, 0);
+    const pruned = await transport.call(computer, { op: 'prune' });
+    assert.ok(pruned.removed.includes(old.job_id), JSON.stringify(pruned));
+    assert.ok(!pruned.removed.includes(running.job_id));
+    await assert.rejects(status(old.job_id), (error) => error.code === 'job_not_found');
+    assert.equal((await status(running.job_id)).state, 'running');
+    assert.equal((await transport.call(computer, { op: 'exec_cancel', job_id: running.job_id, owner })).cancel, 'confirmed');
+    console.log(`# prune removed ${pruned.removed.length} job(s), kept ${pruned.kept}, ${pruned.shots_removed} stale screenshot file(s)`);
+  });
+
   test('small file round trip with sha256, confined to the roots', async () => {
     const data = randomBytes(4096);
     const path = `${root}/files/sample.bin`;
