@@ -161,17 +161,26 @@ Fixed while testing: a cancel whose SIGTERM landed between two supervisor polls 
 `finished_before_cancel`; job output and agent state were world-readable; files created by
 `file_write` were always mode 0600.
 
+In the real DSH (2026-09-30), installed in the desktop profile: the model called the host-side tools
+in a DSH session — `computer_list`, a screenshot whose random marker it read back, a command printing
+a file with a Chinese name with spaces plus the system identity, file write/read with matching sha256,
+a `confirmed` cancel checked independently over ssh, and the `path_outside_roots` /
+`capability_unavailable` refusals. Evidence: `../research/artifacts/remote-machine-p1-20260930/`.
+
+Install (as done for the desktop profile): symlink this directory to
+`~/.dsh/profiles/desktop/node_modules/@local/dsh-remote-machine`, add
+`"@local/dsh-remote-machine": "file:<this directory>"` to the profile's `dependencies` and to
+`dsh.profile.bundles`, and add a `- id: dsh-remote-machine` entry with `config.computers` (see
+Configuration) to its `cordis.patch.yml`. Host code changes need a DSH restart (DSH's hot reload
+ignores `node_modules`).
+
 Not usable yet:
 
-- Not yet installed into or loaded by a running DSH. The manifest, `cordis.patch.yml`, the entry, the
-  routes and `client.js` follow the host API shapes used by `../canvas-plugin` (which does load), but
-  here they are only checked against fake `ctx` objects and a stand-in React. Unverified until a real
-  install: that `sidebarRight.openTab(kind, { params })` hands `params.computer_id` to the tab (the card
-  also tells the tab directly, so the tab switches either way), that `exec.agent.id` equals the
-  `sessionId` the tab receives (the panel only finds the model's screenshots if it does), and how the
-  real React renders the hand-written components.
-- To install, a profile has to depend on this package and list it in its bundles, with the
-  `computers` config; that is not done here (this repository does not touch `~/.dsh`).
+- The right-side panel and the screenshot tool card have not been seen in the real GUI (only against a
+  stand-in React). Unverified: that `sidebarRight.openTab(kind, { params })` hands `params.computer_id`
+  to the tab (the card also tells the tab directly), that `exec.agent.id` equals the `sessionId` the
+  tab receives (the panel only finds the model's screenshots if it does), and how the real React
+  renders the hand-written components.
 - Cua input on Omarchy is known to fail (`production Hyprland input plugin is unavailable`), so input
   tools are only exercised as `capability_unavailable`. Of the Cua tools only `get_desktop_state` and
   `list_windows` have run on a real machine.
