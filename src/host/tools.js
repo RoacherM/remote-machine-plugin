@@ -103,6 +103,21 @@ function decodeText(bytes) {
   }
 }
 
+/**
+ * DSH only accepts tool values that survive a JSON round trip unchanged ("lossless JSON"): drop
+ * undefined fields and turn non-finite numbers into null, rather than fail a call over a field some
+ * platform's Driver does not report.
+ */
+export function jsonClean(value) {
+  if (value === null || typeof value !== 'object') {
+    return typeof value === 'number' && !Number.isFinite(value) ? null : value;
+  }
+  if (Array.isArray(value)) return value.map((item) => (item === undefined ? null : jsonClean(item)));
+  const out = {};
+  for (const [key, item] of Object.entries(value)) if (item !== undefined) out[key] = jsonClean(item);
+  return out;
+}
+
 const text = (value) => ({ type: 'text', text: value });
 const imageBlock = (attachment) => (attachment ? [{ type: 'image', attachment }] : []);
 
@@ -187,16 +202,23 @@ export function createRemoteMachine({ computers, transport, attachments }) {
     if (!meta.capture_id) throw new ToolError('cua_error', `computer ${computer.id}: the screenshot has no capture_id`);
     const png = Buffer.from(shot.png_b64, 'base64');
     if (imageMediaType(png) !== 'image/png') throw new ToolError('invalid_image', `computer ${computer.id}: the screenshot is not a PNG`);
-    const value = {
+    // The macOS Driver reports no frame_scale and no windows with get_desktop_state (Linux reports both):
+    // frame_scale is then screen width over image width, flagged as derived; windows are left out.
+    const derivedScale = meta.screen_width && meta.screenshot_width ? meta.screen_width / meta.screenshot_width : null;
+    const value = jsonClean({
       computer_id: computer.id,
       capture_id: meta.capture_id,
       captured_at: new Date(shot.time_ms).toISOString(),
+      platform: meta.platform,
       image: { width: meta.screenshot_width, height: meta.screenshot_height, bytes: png.length },
       screen: { width: meta.screen_width, height: meta.screen_height },
-      frame_scale: meta.frame_scale,
+      frame_scale: meta.frame_scale ?? derivedScale,
+      ...(meta.frame_scale == null && derivedScale != null ? { frame_scale_derived: true } : {}),
       scale_factor: meta.scale_factor,
-      windows: (meta.windows ?? []).map((w) => ({ window_id: w.window_id, pid: w.pid, app_name: w.app_name, title: w.title, bounds: w.bounds })),
-    };
+      ...(Array.isArray(meta.windows)
+        ? { windows: meta.windows.map((w) => ({ window_id: w.window_id, pid: w.pid, app_name: w.app_name, title: w.title, bounds: w.bounds })) }
+        : {}),
+    });
     remember(session, { ...value, png });
     return { value, png };
   }
@@ -269,7 +291,7 @@ export function createRemoteMachine({ computers, transport, attachments }) {
       output: {
         schema: { type: 'object', properties: { computer_id: { type: 'string' }, capture_id: { type: 'string' } }, required: ['computer_id', 'capture_id'] },
         render: (args, value) => [
-          text(`Screenshot of ${value.computer_id} (capture ${value.capture_id}) at ${value.captured_at}: ${value.image.width}×${value.image.height} image of a ${value.screen.width}×${value.screen.height} screen, frame_scale ${value.frame_scale}.`),
+          text(`Screenshot of ${value.computer_id} (capture ${value.capture_id}) at ${value.captured_at}: ${value.image.width}×${value.image.height} image of a ${value.screen.width}×${value.screen.height} screen, frame_scale ${value.frame_scale}${value.frame_scale_derived ? ' (derived from screen and image width; the Driver did not report it)' : ''}.`),
           ...imageBlock(value.attachment),
         ],
       },
@@ -506,6 +528,11 @@ export function createRemoteMachine({ computers, transport, attachments }) {
       },
     },
   ];
+  // Every value handed to DSH is lossless JSON, whatever a remote Driver left out.
+  for (const tool of tools) {
+    const execute = tool.execute;
+    tool.execute = async (args, exec) => jsonClean(await execute(args, exec));
+  }
 
   return {
     tools,

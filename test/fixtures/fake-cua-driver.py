@@ -118,11 +118,16 @@ def main():
             # Capture ids count up per HOME: capture_fake_1, capture_fake_2, ...
             count = sum(1 for line in open(os.path.join(os.path.expanduser("~"), "cua.log"))
                         if line.startswith('["call", "get_desktop_state"'))
-            print(json.dumps({"capture_id": "capture_fake_%d" % count, "screenshot_width": 4, "screenshot_height": 3,
-                              "screen_width": 8, "screen_height": 6, "frame_scale": 2.0, "scale_factor": 1,
-                              "screenshot_file_path": arguments["screenshot_out_file"],
-                              "windows": [{"window_id": 7, "pid": 42, "app_name": "foot", "title": "term",
-                                           "bounds": {"x": 0, "y": 0, "width": 8, "height": 6}}]}))
+            state = {"capture_id": "capture_fake_%d" % count, "screenshot_width": 4, "screenshot_height": 3,
+                     "screen_width": 8, "screen_height": 6, "frame_scale": 2.0, "scale_factor": 1,
+                     "screenshot_file_path": arguments["screenshot_out_file"],
+                     "windows": [{"window_id": 7, "pid": 42, "app_name": "foot", "title": "term",
+                                  "bounds": {"x": 0, "y": 0, "width": 8, "height": 6}}]}
+            # Like the macOS Driver (0.30.4): no frame_scale and no windows with the desktop capture.
+            if os.path.exists(os.path.join(os.path.expanduser("~"), "cua-macos")):
+                del state["frame_scale"], state["windows"]
+                state["platform"] = "macos"
+            print(json.dumps(state))
             return 0
         if tool == "list_windows":
             print(json.dumps({"windows": [{"window_id": 7, "title": "term"}], "session": arguments.get("session")}))

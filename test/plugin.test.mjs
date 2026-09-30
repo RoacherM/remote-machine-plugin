@@ -160,6 +160,24 @@ test('screenshot: attachment for the model, frame metadata, kept in memory per s
   assert.deepEqual(readdirSync(join(home, '.local/state/dsh-computer/shots')), [], 'no image left on the computer');
 });
 
+test('screenshot from a macOS-shaped Driver (no frame_scale, no windows) is lossless JSON with a derived scale', async () => {
+  writeFileSync(join(home, 'cua-macos'), '');
+  try {
+    const shot = await run('computer_screenshot', { computer_id: 'box' });
+    assert.deepEqual(JSON.parse(JSON.stringify(shot)), shot, 'no undefined or non-finite values reach DSH');
+    assert.equal(shot.frame_scale, 2, 'screen width 8 / image width 4');
+    assert.equal(shot.frame_scale_derived, true);
+    assert.equal('windows' in shot, false, 'windows the Driver did not report are left out, not faked as []');
+    assert.equal(shot.platform, 'macos');
+    assert.match(tools.get('computer_screenshot').output.render({}, shot)[0].text, /frame_scale 2 \(derived/);
+  } finally {
+    rmSync(join(home, 'cua-macos'), { force: true });
+  }
+  const linux = await run('computer_screenshot', { computer_id: 'box' });
+  assert.equal(linux.frame_scale_derived, undefined, 'a reported frame_scale is used as is');
+  assert.equal(linux.windows.length, 1);
+});
+
 test('exec: start, incremental status, ownership by DSH session, confirmed cancel', async () => {
   const job = await run('computer_exec_start', { computer_id: 'box', command: 'printf "a\\n"; sleep 0.5; printf "b\\n"; exit 5' });
   assert.match(job.job_id, /^j[0-9a-z]+-[0-9a-f]{12}$/);
