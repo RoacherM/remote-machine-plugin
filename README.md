@@ -174,6 +174,34 @@ Install (as done for the desktop profile): symlink this directory to
 Configuration) to its `cordis.patch.yml`. Host code changes need a DSH restart (DSH's hot reload
 ignores `node_modules`).
 
+Cua on Omarchy (cua-driver 0.30.4, Hyprland 0.56.1, ARM64; tested 2026-09-30, observation tools through
+the real `computer_cua_call`, input tools directly against the Driver on a dedicated test window):
+
+| tool | result |
+| --- | --- |
+| `get_desktop_state` / `computer_screenshot` | works; PNG + capture id + frame_scale |
+| `list_windows`, `get_screen_size`, `verify_state` (window predicates) | works |
+| `list_apps` | works; the Driver lists every process (~60 KB), the plugin keeps desktop apps and apps with windows and counts the rest (`omitted_apps`, `omitted_processes`) |
+| `get_accessibility_tree` | runs, but on Wayland lists no windows (X11 only); processes are dropped by the plugin |
+| `get_window_state` | GTK apps (Nautilus): full AT-SPI element tree, `query` filter works (found `报告 一.txt`); foot: `degraded`, window metadata + window screenshot only. Window screenshots show the window even under the screensaver |
+| `zoom` | works after `get_window_state` in the same Cua session; image comes back inline as JPEG and is attached |
+| `get_cursor_position` | `available: false` (Wayland does not expose the pointer) |
+| `launch_app` | works (started a foot window); needs `exec`, not `input` |
+| `click`, `double_click`, `right_click`, `scroll`, `drag`, `type_text`, `press_key`, `hotkey` | fail: `background_unavailable`; with `delivery_mode: foreground`: `foreground_unavailable` (production Hyprland input plugin missing); `scope: desktop` goes through the libei portal, which times out / reports its channel closed |
+| element click (`element_index` + `snapshot_id`, AT-SPI route) | fails: the Driver asks X11 for a Wayland window (`GetWindowAttributes` BadWindow) |
+| `bring_to_front` | `foreground_unavailable` |
+| `set_window_frame` | the compositor exposes no protocol for it |
+| `move_cursor` | moves only the agent's overlay cursor; the real pointer is unchanged |
+
+So on Omarchy there is no input route at all; `capabilities.input` stays `false`. Other facts found:
+the Driver ends a Cua session after roughly 2–5 minutes without calls (alive with calls every ≤120 s,
+ended after a 300 s gap) — the agent now starts the same label again and retries once; the Driver
+takes `session` on every tool even when a tool's schema omits it, and without it context-dependent
+calls such as `zoom` fail with `screenshot_context_missing`; Omarchy's screensaver (a fullscreen foot
+window) comes up after a few idle minutes and covers `get_desktop_state`, and without input the agent
+cannot dismiss it (it left on its own once); there is no idle lock (`hypridle`) on this VM, only a
+lock-before-suspend hook.
+
 Not usable yet:
 
 - The right-side panel and the screenshot tool card have not been seen in the real GUI (only against a
@@ -181,9 +209,9 @@ Not usable yet:
   to the tab (the card also tells the tab directly), that `exec.agent.id` equals the `sessionId` the
   tab receives (the panel only finds the model's screenshots if it does), and how the real React
   renders the hand-written components.
-- Cua input on Omarchy is known to fail (`production Hyprland input plugin is unavailable`), so input
-  tools are only exercised as `capability_unavailable`. Of the Cua tools only `get_desktop_state` and
-  `list_windows` have run on a real machine.
+- No desktop input on Omarchy (see the table above); input tools only return `capability_unavailable`
+  there. The `list_apps` compaction and the `launch_app` capability change are in `tools.js`, which the
+  running DSH only picks up after a restart (the agent-side fixes load when the plugin is re-enabled).
 - macOS remotes are untested (the offline suite runs the agent on macOS locally only).
 - The 7-day retention and the 1-hour prune interval are fixed in the agent, not configurable. The
   7-day expiry itself has only been exercised with backdated job files, not by waiting a week.
