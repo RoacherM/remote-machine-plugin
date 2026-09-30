@@ -147,6 +147,8 @@ before(() => {
   chmodSync(join(home, 'bin/cua-driver'), 0o755);
   process.env.FAKE_SSH_HOME = home;
   process.env.FAKE_SSH_LOG = join(home, 'ssh.log');
+  // The agent's macOS lock check must not depend on whether this Mac is locked.
+  process.env.DSH_AGENT_IOREG = new URL('./fixtures/fake-ioreg.py', import.meta.url).pathname;
   machine = createRemoteMachine({
     computers: normalizeComputers([
       {

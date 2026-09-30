@@ -633,7 +633,29 @@ def take_file(path):
     return base64.b64encode(data).decode("ascii"), len(data)
 
 
+def mac_screen_locked():
+    """True/False for the console session of this user on macOS, None when it cannot be told (other
+    platforms, no ioreg). A locked Mac hands screen capture a black frame, not an error."""
+    ioreg = os.environ.get("DSH_AGENT_IOREG") or ("/usr/sbin/ioreg" if sys.platform == "darwin" else None)
+    if not ioreg or not os.access(ioreg, os.X_OK):
+        return None
+    try:
+        import plistlib
+        out = subprocess.run([ioreg, "-n", "Root", "-d1", "-a"], capture_output=True, timeout=10)
+        root = plistlib.loads(out.stdout)
+        root = root[0] if isinstance(root, list) else root
+        for user in root.get("IOConsoleUsers") or []:
+            if user.get("kCGSSessionUserIDKey") == os.getuid() and user.get("kCGSSessionOnConsoleKey"):
+                return bool(user.get("CGSSessionScreenIsLocked"))
+        return None
+    except Exception:
+        return None
+
+
 def op_screenshot(req):
+    if mac_screen_locked():
+        raise Fail("screen_locked", "the screen is locked; macOS only gives screen capture a black frame "
+                   "until someone unlocks it at the computer")
     os.makedirs(SHOTS_DIR, mode=0o700, exist_ok=True)
     out = os.path.join(SHOTS_DIR, uuid.uuid4().hex + ".png")
     arguments = {"session": req["session"], "screenshot_out_file": out}

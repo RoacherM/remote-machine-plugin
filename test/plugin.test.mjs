@@ -38,6 +38,8 @@ before(() => {
   chmodSync(join(home, 'bin/cua-driver'), 0o755);
   process.env.FAKE_SSH_HOME = home;
   process.env.FAKE_SSH_LOG = join(home, 'ssh.log');
+  // The agent's macOS lock check must not depend on whether this Mac is locked.
+  process.env.DSH_AGENT_IOREG = new URL('./fixtures/fake-ioreg.py', import.meta.url).pathname;
   machine = createRemoteMachine({
     computers: normalizeComputers([
       {
@@ -176,6 +178,22 @@ test('screenshot from a macOS-shaped Driver (no frame_scale, no windows) is loss
   const linux = await run('computer_screenshot', { computer_id: 'box' });
   assert.equal(linux.frame_scale_derived, undefined, 'a reported frame_scale is used as is');
   assert.equal(linux.windows.length, 1);
+});
+
+test('a locked Mac is reported as screen_locked, not handed to the model as a black screenshot', async () => {
+  writeFileSync(join(home, 'ioreg-locked'), '');
+  const savedBefore = saved.length;
+  const kept = machine.screenshots('dsh-session-a', 'box').length;
+  try {
+    await assert.rejects(run('computer_screenshot', { computer_id: 'box' }),
+      (error) => error.code === 'screen_locked' && /locked/.test(error.message) && /box/.test(error.message));
+  } finally {
+    rmSync(join(home, 'ioreg-locked'), { force: true });
+  }
+  assert.equal(saved.length, savedBefore, 'no attachment was saved');
+  assert.equal(machine.screenshots('dsh-session-a', 'box').length, kept, 'nothing kept for the panel');
+  const unlocked = await run('computer_screenshot', { computer_id: 'box' });
+  assert.match(unlocked.capture_id, /^capture_fake_/);
 });
 
 test('exec: start, incremental status, ownership by DSH session, confirmed cancel', async () => {
@@ -341,7 +359,9 @@ test('panel routes: computers, status, refresh capture, screenshots by session a
   assert.notEqual(shot.capture_id, 'capture_fake_1', 'a new capture, not the earlier one');
   assert.equal(shot.frame_scale, 2);
   assert.equal(shot.attachment, undefined, 'a panel refresh is not sent to the model');
-  assert.equal(machine.screenshots('dsh-session-a', 'box').length, before + 1);
+  // Kept for the panel: the newest five per session and computer.
+  assert.equal(machine.screenshots('dsh-session-a', 'box').length, Math.min(before + 1, 5));
+  assert.equal(machine.screenshots('dsh-session-a', 'box').at(-1).capture_id, shot.capture_id);
 
   const listed = await jsonOf(await fetchRoute('GET', 'screenshots', { query: { session: 'dsh-session-a', computer: 'box' } }));
   assert.equal(listed.screenshots.at(-1).capture_id, shot.capture_id);

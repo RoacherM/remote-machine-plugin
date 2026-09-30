@@ -18,7 +18,7 @@ class RouteError extends Error {
 }
 
 const STATUS_BY_CODE = {
-  unknown_computer: 404, no_session: 400, capability_unavailable: 409, invalid_image: 502, cua_error: 502,
+  unknown_computer: 404, no_session: 400, capability_unavailable: 409, screen_locked: 423, invalid_image: 502, cua_error: 502,
   transport_error: 502, timeout: 504, aborted: 499, python_unavailable: 502, agent_failed: 502,
   agent_protocol_error: 502, agent_install_failed: 502,
 };
