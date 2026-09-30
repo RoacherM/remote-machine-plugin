@@ -202,6 +202,23 @@ window) comes up after a few idle minutes and covers `get_desktop_state`, and wi
 cannot dismiss it (it left on its own once); there is no idle lock (`hypridle`) on this VM, only a
 lock-before-suspend hook.
 
+Mac mini (`macmini`: macOS 26.2 arm64, cua-driver 0.30.4, Accessibility + Screen Recording granted,
+reached over Tailscale userspace mode; tested 2026-10-01 directly against the Driver on a separate
+TextEdit instance opened on a test file):
+
+| action | result |
+| --- | --- |
+| `get_desktop_state` | works (2560×1440 screen, PNG downscaled to 1280×720). The macOS Driver reports **no** `frame_scale` and **no** `windows` here; the plugin used to pass the missing values on and DSH rejected the result as not lossless JSON — fixed in `f75b7e9` (derived `frame_scale` flagged `frame_scale_derived`, windows left out, every tool value cleaned), live after a DSH restart |
+| `launch_app` (`creates_new_application_instance`, `urls`) | works; without a file TextEdit shows only its open panel |
+| `type_text` on an element (AX), incl. Chinese | `confirmed` by value readback, background, pointer untouched |
+| `press_key return` on an element | `confirmed` |
+| `type_text` with `x,y` | `confirmed` |
+| `click`, `double_click`, `right_click`, `scroll` with `x,y` | posted in the background (`unverifiable`: the Driver cannot read back their effect); need a `get_window_state` screenshot of the window first, else `screenshot_context_missing` |
+| `hotkey cmd+a` in the background | `unverifiable`, no effect seen; the Driver suggests `delivery_mode: foreground`, not tried because it takes focus on a Mac someone is using |
+
+`capabilities.input` for `macmini` is still `false` in the profile until these are rerun through the
+plugin after a DSH restart.
+
 Not usable yet:
 
 - The right-side panel and the screenshot tool card have not been seen in the real GUI (only against a
