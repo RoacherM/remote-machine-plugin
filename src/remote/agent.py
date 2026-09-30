@@ -670,8 +670,10 @@ def op_cua(req):
     missing = [k for k in schema.get("required") or [] if k not in arguments and k != "session"]
     if missing:
         raise Fail("invalid_arguments", "missing argument(s) for %s: %s. Schema: %s" % (tool, ", ".join(missing), json.dumps(schema)))
-    if "session" in props:
-        arguments["session"] = req["session"]  # always the plugin-owned session
+    # Always the plugin-owned session, whether or not the tool's schema lists it: the Driver takes
+    # `session` on every call, and without it a call lands in a throwaway session that lacks the
+    # context of earlier calls (zoom after get_window_state fails with screenshot_context_missing).
+    arguments["session"] = req["session"]
     image_path = None
     if "screenshot_out_file" in props:
         os.makedirs(SHOTS_DIR, mode=0o700, exist_ok=True)
@@ -685,6 +687,11 @@ def op_cua(req):
             image = {"png_b64": data, "bytes": size}
             if isinstance(value, dict):
                 value.pop("screenshot_file_path", None)
+        # zoom answers with the image inline (a JPEG despite the key name): pass it on as an image,
+        # not as base64 text for the model to read.
+        if image is None and isinstance(value, dict) and isinstance(value.get("screenshot_png_b64"), str):
+            data = value.pop("screenshot_png_b64")
+            image = {"png_b64": data, "bytes": len(base64.b64decode(data))}
     finally:
         if image_path and os.path.exists(image_path):
             os.unlink(image_path)

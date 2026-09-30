@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # Stand-in for cua-driver in offline tests. Supports `--version`, `describe <tool>` and
 # `call <tool> <json>` for a few tools; every call is appended to $HOME/cua.log as JSON.
+import base64
 import json
 import os
 import struct
@@ -16,6 +17,12 @@ SCHEMAS = {
     "end_session": {"type": "object", "properties": {"session": {"type": "string"}}},
     "start_session": {"type": "object", "properties": {"session": {"type": "string"}}},
     "list_apps": {"type": "object", "additionalProperties": False, "properties": {}},
+    # Like the real zoom: no `session` in its schema, yet it needs the session's earlier window capture.
+    "zoom": {"type": "object", "additionalProperties": False, "required": ["window_id", "x1", "y1", "x2", "y2"], "properties": {
+        "pid": {"type": "integer"}, "window_id": {"type": "integer"}, "x1": {"type": "number"}, "y1": {"type": "number"},
+        "x2": {"type": "number"}, "y2": {"type": "number"}}},
+    "get_window_state": {"type": "object", "additionalProperties": False, "required": ["pid", "window_id"], "properties": {
+        "pid": {"type": "integer"}, "window_id": {"type": "integer"}, "screenshot_out_file": {"type": "string"}, "session": {"type": "string"}}},
     "get_accessibility_tree": {"type": "object", "additionalProperties": False, "properties": {}},
 }
 
@@ -79,6 +86,26 @@ def main():
                  "launch_path": "/usr/bin/chromium", "last_used": None, "windows": []},
             ]
             print(json.dumps({"apps": kernel + desktop, "processes": noise(300)}))
+            return 0
+        captured = os.path.join(os.path.expanduser("~"), "cua-window-captures")
+        if tool == "get_window_state":
+            with open(arguments["screenshot_out_file"], "wb") as handle:
+                handle.write(png(4, 3))
+            with open(captured, "a") as handle:
+                handle.write("%s %s\n" % (session, arguments["window_id"]))
+            print(json.dumps({"window_id": arguments["window_id"], "snapshot_id": "s1", "capture_id": "capture_win_1",
+                              "screenshot_file_path": arguments["screenshot_out_file"], "elements": []}))
+            return 0
+        if tool == "zoom":
+            try:
+                known = set(open(captured).read().split("\n"))
+            except OSError:
+                known = set()
+            if "%s %s" % (session, arguments["window_id"]) not in known:
+                print(json.dumps({"code": "screenshot_context_missing", "window_id": arguments["window_id"]}, indent=2), file=sys.stderr)
+                return 1
+            jpeg = b"\xff\xd8\xff\xe0" + bytes(40)
+            print(json.dumps({"format": "jpeg", "mime_type": "image/jpeg", "screenshot_png_b64": base64.b64encode(jpeg).decode()}))
             return 0
         if tool == "get_accessibility_tree":
             print(json.dumps({"processes": noise(300), "windows": []}))

@@ -254,6 +254,18 @@ test('cua_call: a Cua session the Driver ended is started again, once, and the c
   assert.match(shot.capture_id, /^capture_fake_/);
 });
 
+test('cua_call: zoom runs in the plugin session after get_window_state and comes back as an image', async () => {
+  const state = await run('computer_cua_call', { computer_id: 'box', tool: 'get_window_state', arguments: { pid: 42, window_id: 7 } });
+  assert.equal(state.attachment.mediaType, 'image/png');
+  const zoom = await run('computer_cua_call', { computer_id: 'box', tool: 'zoom', arguments: { window_id: 7, x1: 0, y1: 0, x2: 2, y2: 2 } });
+  assert.equal(zoom.attachment.mediaType, 'image/jpeg');
+  assert.match(zoom.attachment.name, /\.jpg$/);
+  assert.equal(zoom.value.screenshot_png_b64, undefined, 'no base64 text for the model');
+  // Another DSH session has no capture of that window in its own Cua session.
+  await assert.rejects(run('computer_cua_call', { computer_id: 'box', tool: 'zoom', arguments: { window_id: 7, x1: 0, y1: 0, x2: 2, y2: 2 } }, execB),
+    (error) => error.code === 'cua_error' && /screenshot_context_missing/.test(error.message));
+});
+
 test('cua_call: process lists are left out and counted; launch_app needs exec, not input', async () => {
   const apps = await run('computer_cua_call', { computer_id: 'box', tool: 'list_apps' });
   assert.equal(apps.value.processes, undefined);
@@ -338,7 +350,9 @@ test('dispose ends the Cua sessions the plugin opened', async () => {
   await machine.dispose();
   const ended = readFileSync(join(home, 'cua.log'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
     .filter((args) => args[0] === 'call' && args[1] === 'end_session').map((args) => JSON.parse(args[2]).session);
-  assert.equal(ended.length, 1);
-  assert.match(ended[0], /^dsh-[0-9a-f]{16}$/);
+  // One Cua session per DSH session that used Cua here (A, and B from the zoom test), each ended once.
+  assert.equal(ended.length, 2);
+  assert.equal(new Set(ended).size, 2);
+  for (const label of ended) assert.match(label, /^dsh-[0-9a-f]{16}$/);
   assert.deepEqual(machine.screenshots('dsh-session-a', 'box'), []);
 });
