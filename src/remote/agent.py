@@ -242,6 +242,9 @@ def op_exec_start(req):
     if argv is not None and (not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv)):
         raise Fail("invalid_request", "argv must be a non-empty list of strings")
     cwd = os.path.expanduser(req.get("cwd") or "~")
+    # The computer's configured work root (the default cwd) is created on first use; an explicit cwd must exist.
+    if req.get("create_cwd") and not os.path.exists(cwd):
+        os.makedirs(cwd, mode=0o700, exist_ok=True)
     if not os.path.isdir(cwd):
         raise Fail("cwd_not_found", "remote cwd does not exist: %s" % cwd)
     timeout_s = float(req.get("timeout_s") or 0)

@@ -183,6 +183,19 @@ test('exec: start, incremental status, ownership by DSH session, confirmed cance
   assert.equal(cancelled.process_group_alive, false);
 });
 
+test('exec: a missing work root is created for the default cwd; a missing explicit cwd is an error', async () => {
+  const fresh = createRemoteMachine({
+    computers: normalizeComputers([{ id: 'fresh', transport: { type: 'ssh', host: 'fake' }, workRoot: '~/not yet/there' }]),
+    transport: createTransport({ sshCommand: [process.execPath, FAKE_SSH] }),
+    attachments: () => attachments,
+  });
+  const start = fresh.tools.find((tool) => tool.name === 'computer_exec_start');
+  await rejectsWith(start.execute({ computer_id: 'fresh', argv: ['true'], cwd: '~/missing' }, execA), 'cwd_not_found');
+  assert.equal(existsSync(join(home, 'missing')), false);
+  const job = await start.execute({ computer_id: 'fresh', argv: ['true'] }, execA);
+  assert.equal(job.cwd, realpathSync(join(home, 'not yet/there')));
+});
+
 test('cancel that cannot reach the computer is unknown, never success', async () => {
   const result = await run('computer_exec_cancel', { computer_id: 'offline', job_id: 'j-anything' });
   assert.equal(result.cancel, 'unknown');

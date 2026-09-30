@@ -287,6 +287,7 @@ export function createRemoteMachine({ computers, transport, attachments }) {
             job_id, owner, computer_id: computer.id,
             ...(hasCommand ? { shell_script: args.command } : { argv: args.argv }),
             cwd: args.cwd || computer.workRoot || '~', timeout_s: args.timeout_s ?? 0,
+            ...(!args.cwd && computer.workRoot ? { create_cwd: true } : {}),
           }, { signal: exec?.signal, timeoutMs: 60_000 });
         } catch (error) {
           throw remoteFailure(computer, error);
