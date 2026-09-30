@@ -4,6 +4,7 @@
   "description": "DSH multi-computer remote execution: explicit computer_id tools for screenshots, managed commands and files on remote machines (P1: SSH transport)",
   "private": true,
   "type": "module",
+  "main": "./index.js",
   "scripts": {
     "test": "node --test --test-force-exit test/",
     "test:live": "DSH_REMOTE_LIVE=1 node --test --test-force-exit test/"
