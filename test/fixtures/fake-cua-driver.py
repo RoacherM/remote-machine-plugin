@@ -14,7 +14,30 @@ SCHEMAS = {
     "click": {"type": "object", "additionalProperties": False, "required": ["x", "y"], "properties": {
         "x": {"type": "number"}, "y": {"type": "number"}, "session": {"type": "string"}}},
     "end_session": {"type": "object", "properties": {"session": {"type": "string"}}},
+    "start_session": {"type": "object", "properties": {"session": {"type": "string"}}},
+    "list_apps": {"type": "object", "additionalProperties": False, "properties": {}},
+    "get_accessibility_tree": {"type": "object", "additionalProperties": False, "properties": {}},
 }
+
+# Like the real Driver: an ended session label is refused until start_session revives it.
+ENDED = os.path.join(os.path.expanduser("~"), "cua-ended-sessions")
+
+
+def ended():
+    try:
+        with open(ENDED) as handle:
+            return set(handle.read().split())
+    except OSError:
+        return set()
+
+
+def set_ended(labels):
+    with open(ENDED, "w") as handle:
+        handle.write("\n".join(sorted(labels)))
+
+
+def noise(n):
+    return [{"name": "kworker/%d" % i, "pid": 100 + i} for i in range(n)]
 
 
 def png(width, height):
@@ -39,6 +62,27 @@ def main():
         return 0
     if len(args) == 3 and args[0] == "call":
         tool, arguments = args[1], json.loads(args[2])
+        session = arguments.get("session")
+        if tool == "start_session":
+            set_ended(ended() - {session})
+            print(json.dumps({"active": True, "session": session}))
+            return 0
+        if session and session in ended() and tool != "end_session":
+            print("session has ended; tool call '%s' was rejected. Call start_session with session '%s' to start it again, or use a new session label." % (tool, session), file=sys.stderr)
+            return 1
+        if tool == "list_apps":
+            kernel = [dict(p, active=False, bundle_id=None, kind=None, last_used=None, launch_path=None, running=True, windows=[]) for p in noise(300)]
+            desktop = [
+                {"name": "Foot Server", "pid": 42, "kind": "desktop", "bundle_id": "foot-server", "running": True, "active": False,
+                 "launch_path": "foot --server", "last_used": None, "windows": [{"window_id": 7, "title": "term"}]},
+                {"name": "Chromium", "pid": 0, "kind": "desktop", "bundle_id": "chromium", "running": False, "active": False,
+                 "launch_path": "/usr/bin/chromium", "last_used": None, "windows": []},
+            ]
+            print(json.dumps({"apps": kernel + desktop, "processes": noise(300)}))
+            return 0
+        if tool == "get_accessibility_tree":
+            print(json.dumps({"processes": noise(300), "windows": []}))
+            return 0
         if tool == "get_desktop_state":
             with open(arguments["screenshot_out_file"], "wb") as handle:
                 handle.write(png(4, 3))
@@ -55,7 +99,8 @@ def main():
             print(json.dumps({"windows": [{"window_id": 7, "title": "term"}], "session": arguments.get("session")}))
             return 0
         if tool == "end_session":
-            print(json.dumps({"ended": arguments.get("session")}))
+            set_ended(ended() | {session})
+            print(json.dumps({"ended": session}))
             return 0
         print("production Hyprland input plugin is unavailable", file=sys.stderr)
         return 1

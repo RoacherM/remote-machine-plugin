@@ -22,8 +22,38 @@ export const CUA_OBSERVE_TOOLS = Object.freeze([
 ]);
 export const CUA_INPUT_TOOLS = Object.freeze([
   'click', 'double_click', 'right_click', 'drag', 'scroll', 'type_text', 'press_key', 'hotkey',
-  'move_cursor', 'set_value', 'launch_app', 'bring_to_front', 'set_window_frame', 'invoke_menu',
+  'move_cursor', 'set_value', 'bring_to_front', 'set_window_frame', 'invoke_menu',
 ]);
+// Starts a program without keyboard or mouse (works on Omarchy, where input does not): no more power
+// than computer_exec_start, so it needs the exec capability rather than input.
+export const CUA_APP_TOOLS = Object.freeze(['launch_app']);
+const CUA_TOOLS = [...CUA_OBSERVE_TOOLS, ...CUA_APP_TOOLS, ...CUA_INPUT_TOOLS];
+// Longest Cua result shown to the model; list_apps on Linux alone is ~60 KB of kernel threads.
+const MAX_CUA_TEXT = 16_000;
+
+/**
+ * Drops what only fills the model's context: every process of the machine (`processes`, and apps that
+ * are merely processes: no desktop entry, no window). What was dropped is counted, not hidden silently.
+ */
+export function compactCuaValue(tool, value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const out = { ...value };
+  if (Array.isArray(out.processes) && (tool === 'list_apps' || tool === 'get_accessibility_tree')) {
+    out.omitted_processes = out.processes.length;
+    delete out.processes;
+  }
+  if (tool === 'list_apps' && Array.isArray(out.apps)) {
+    const kept = out.apps.filter((app) => app?.kind === 'desktop' || (Array.isArray(app?.windows) && app.windows.length > 0));
+    out.omitted_apps = out.apps.length - kept.length;
+    out.apps = kept.map((app) => Object.fromEntries(Object.entries(app).filter(([, v]) => v !== null)));
+  }
+  return out;
+}
+
+function cuaText(value) {
+  const full = JSON.stringify(value, null, 2) ?? 'null';
+  return full.length <= MAX_CUA_TEXT ? full : `${full.slice(0, MAX_CUA_TEXT)}\n… [${full.length - MAX_CUA_TEXT} more characters not shown]`;
+}
 
 export class ToolError extends Error {
   constructor(code, message, details = {}) {
@@ -437,12 +467,12 @@ export function createRemoteMachine({ computers, transport, attachments }) {
 
     {
       name: 'computer_cua_call',
-      description: `Call one Cua driver tool on a computer. Observation tools: ${CUA_OBSERVE_TOOLS.join(', ')}. Input tools (only where the computer has the input capability): ${CUA_INPUT_TOOLS.join(', ')}. Arguments are checked against the driver's own schema; the Cua session is managed for you.`,
+      description: `Call one Cua driver tool on a computer. Observation tools: ${CUA_OBSERVE_TOOLS.join(', ')}. launch_app (needs the exec capability). Input tools (only where the computer has the input capability): ${CUA_INPUT_TOOLS.join(', ')}. Arguments are checked against the driver's own schema; the Cua session is managed for you. Process lists are left out of list_apps/get_accessibility_tree (counted in omitted_*); use computer_exec_start for ps.`,
       parameters: {
         type: 'object',
         properties: {
           computer_id: computerIdParam,
-          tool: { type: 'string', enum: [...CUA_OBSERVE_TOOLS, ...CUA_INPUT_TOOLS] },
+          tool: { type: 'string', enum: CUA_TOOLS },
           arguments: { type: 'object', description: 'Arguments for the Cua tool (without session).' },
         },
         required: ['computer_id', 'tool'],
@@ -451,15 +481,15 @@ export function createRemoteMachine({ computers, transport, attachments }) {
       timeoutMs: 120_000,
       output: {
         schema: { type: 'object', properties: { computer_id: { type: 'string' }, tool: { type: 'string' } }, required: ['computer_id', 'tool'] },
-        render: (args, value) => [text(`Cua ${value.tool} on ${value.computer_id}:\n${JSON.stringify(value.value, null, 2)}`), ...imageBlock(value.attachment)],
+        render: (args, value) => [text(`Cua ${value.tool} on ${value.computer_id}:\n${cuaText(value.value)}`), ...imageBlock(value.attachment)],
       },
       async execute(args, exec) {
         const computer = computerOf(args);
         const tool = args.tool;
-        const input = CUA_INPUT_TOOLS.includes(tool);
-        if (!input && !CUA_OBSERVE_TOOLS.includes(tool)) throw new ToolError('tool_not_allowed', `Cua tool ${tool} is not allowed; allowed: ${[...CUA_OBSERVE_TOOLS, ...CUA_INPUT_TOOLS].join(', ')}`);
+        if (!CUA_TOOLS.includes(tool)) throw new ToolError('tool_not_allowed', `Cua tool ${tool} is not allowed; allowed: ${CUA_TOOLS.join(', ')}`);
         if (!computer.cua) throw new ToolError('capability_unavailable', `computer ${computer.id} has no Cua driver configured`, { computer_id: computer.id, capability: 'cua' });
-        if (input) requireCapability(computer, 'input', 'drive the desktop (input capability is off)');
+        if (CUA_INPUT_TOOLS.includes(tool)) requireCapability(computer, 'input', 'drive the desktop (input capability is off)');
+        if (CUA_APP_TOOLS.includes(tool)) requireCapability(computer, 'exec', 'launch apps (exec capability is off)');
         const session = sessionOf(exec);
         // The session and output file are the plugin's: the agent overrides both whatever the model sent.
         const { session: _s, screenshot_out_file: _f, ...toolArgs } = args.arguments && typeof args.arguments === 'object' ? args.arguments : {};
@@ -472,7 +502,7 @@ export function createRemoteMachine({ computers, transport, attachments }) {
           const id = result.value?.capture_id ?? randomBytes(4).toString('hex');
           attachment = await saveImage(bytes, `${computer.id}-${tool}-${id}.${imageMediaType(bytes) === 'image/jpeg' ? 'jpg' : 'png'}`);
         }
-        return { computer_id: computer.id, tool, value: result.value, ...(attachment ? { attachment } : {}) };
+        return { computer_id: computer.id, tool, value: compactCuaValue(tool, result.value), ...(attachment ? { attachment } : {}) };
       },
     },
   ];

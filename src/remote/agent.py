@@ -585,7 +585,23 @@ def op_file_write(req):
 
 # ---------------------------------------------------------------- Cua
 
+SESSION_ENDED = "session has ended"
+
+
 def cua_run(cua_path, tool, arguments, timeout_s):
+    """Runs one Cua tool. The Driver ends idle sessions and then refuses the label until start_session
+    revives it; the plugin's labels are stable per DSH session, so revive once and retry."""
+    try:
+        return cua_run_once(cua_path, tool, arguments, timeout_s)
+    except Fail as error:
+        session = arguments.get("session")
+        if not session or tool in ("start_session", "end_session") or SESSION_ENDED not in error.message:
+            raise
+    cua_run_once(cua_path, "start_session", {"session": session}, 15)
+    return cua_run_once(cua_path, tool, arguments, timeout_s)
+
+
+def cua_run_once(cua_path, tool, arguments, timeout_s):
     cua_path = os.path.expanduser(cua_path or "~/.local/bin/cua-driver")
     if not os.access(cua_path, os.X_OK):
         raise Fail("cua_unavailable", "Cua driver not found at %s" % cua_path)

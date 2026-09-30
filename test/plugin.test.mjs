@@ -1,7 +1,7 @@
 // Offline: the plugin entry and the computer_* tools against a fake ssh (running the real agent locally
 // under a temporary HOME) and a fake cua-driver.
 import assert from 'node:assert/strict';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
@@ -236,6 +236,44 @@ test('cua_call: whitelist, upstream schema, input capability, plugin-owned sessi
   const shot = await run('computer_cua_call', { computer_id: 'box', tool: 'get_desktop_state', arguments: {} });
   assert.equal(shot.attachment.mediaType, 'image/png');
   await rejectsWith(run('computer_cua_call', { computer_id: 'offline', tool: 'list_windows' }), 'capability_unavailable');
+});
+
+test('cua_call: a Cua session the Driver ended is started again, once, and the call goes through', async () => {
+  const first = await run('computer_cua_call', { computer_id: 'box', tool: 'list_windows' });
+  const label = first.value.session;
+  writeFileSync(join(home, 'cua-ended-sessions'), label);
+  const log = () => readFileSync(join(home, 'cua.log'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  const before = log().length;
+  const again = await run('computer_cua_call', { computer_id: 'box', tool: 'list_windows' });
+  assert.equal(again.value.session, label);
+  const calls = log().slice(before).filter((args) => args[0] === 'call').map((args) => args[1]);
+  assert.deepEqual(calls, ['list_windows', 'start_session', 'list_windows']);
+  // Screenshots go through the same revival.
+  writeFileSync(join(home, 'cua-ended-sessions'), label);
+  const shot = await run('computer_screenshot', { computer_id: 'box' });
+  assert.match(shot.capture_id, /^capture_fake_/);
+});
+
+test('cua_call: process lists are left out and counted; launch_app needs exec, not input', async () => {
+  const apps = await run('computer_cua_call', { computer_id: 'box', tool: 'list_apps' });
+  assert.equal(apps.value.processes, undefined);
+  assert.equal(apps.value.omitted_processes, 300);
+  assert.equal(apps.value.omitted_apps, 300);
+  assert.deepEqual(apps.value.apps.map((app) => app.name), ['Foot Server', 'Chromium']);
+  assert.ok(!Object.values(apps.value.apps[0]).includes(null), 'null fields dropped');
+  const rendered = tools.get('computer_cua_call').output.render({}, apps)[0].text;
+  assert.ok(rendered.length < 2000, `list_apps renders compactly (${rendered.length} chars)`);
+  const tree = await run('computer_cua_call', { computer_id: 'box', tool: 'get_accessibility_tree' });
+  assert.deepEqual(tree.value, { windows: [], omitted_processes: 300 });
+  // Past the capability gate (the fake driver has no launch_app, so its schema lookup fails instead).
+  await rejectsWith(run('computer_cua_call', { computer_id: 'box', tool: 'launch_app', arguments: { name: 'foot' } }), 'cua_unknown_tool');
+  const noExec = createRemoteMachine({
+    computers: normalizeComputers([{ id: 'ro', transport: { type: 'ssh', host: 'fake' }, cua: { path: '~/bin/cua-driver' }, capabilities: { exec: false } }]),
+    transport: createTransport({ sshCommand: [process.execPath, FAKE_SSH] }),
+    attachments: () => attachments,
+  });
+  const cua = noExec.tools.find((tool) => tool.name === 'computer_cua_call');
+  await rejectsWith(cua.execute({ computer_id: 'ro', tool: 'launch_app', arguments: { name: 'foot' } }, execA), 'capability_unavailable');
 });
 
 test('panel routes: computers, status, refresh capture, screenshots by session and computer', async () => {
