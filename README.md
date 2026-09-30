@@ -5,8 +5,16 @@ reaches computers over SSH. This repository is the plugin root.
 
 ## Layout
 
+- `package.json` / `cordis.patch.yml` — DSH manifest: `dsh.bundle.patch` inserts `{ id: dsh-remote-machine,
+  name: '@local/dsh-remote-machine' }`; `dsh.client` (platform `web`) loads `client.js` with
+  `@deepseek-ai/dsh-client-locale` and `@deepseek-ai/dsh-client-ui-sidebar-right`. No runtime npm dependencies.
 - `index.js` — plugin entry (`name`, `inject = ['connection','tools']`, `apply(ctx, config)`): registers the
-  `computer_*` tools through `ctx.effect`; disposing ends the Cua sessions the plugin opened.
+  `computer_*` tools and the panel routes through `ctx.effect`; disposing ends the Cua sessions the plugin
+  opened.
+- `src/host/routes.js` — `/api/remote-machine/*` routes for the panel (`ctx.connection.fetch.register`,
+  buffered bodies), served from the in-memory screenshot store.
+- `client.js` — hand-written browser half (`window.__ModuleLoader__.load`, `React.createElement`, no build):
+  right-sidebar tab type + body and a `computer_screenshot` tool card.
 - `src/host/config.js` — `normalizeComputers(config.computers)`: ids, defaults, capabilities.
 - `src/host/tools.js` — the tools (see below) and the in-memory screenshot store.
 - `src/remote/agent.py` — remote executor, Python 3 standard library only. One JSON request on stdin, one
@@ -31,6 +39,36 @@ host injects (`exec.agent.id`); the model cannot supply it.
 | `computer_exec_cancel` | `confirmed` / `cancelling` / `not_running` / `finished_before_cancel`, or `unknown` when the computer did not answer |
 | `computer_file_read` / `computer_file_write` | inside `fileRoots` only; utf8 or base64; sha256; `overwrite`, `expected_sha256`, `mkdirs`; ≤ 4 MiB |
 | `computer_cua_call` | whitelisted Cua tools only (observation always, input only with `capabilities.input: true`, else `capability_unavailable`); arguments checked against the driver's own `describe` schema; `session`/`screenshot_out_file` are always the plugin's |
+
+## Right-side panel
+
+`client.js` registers a sidebar tab type (`sidebarRightTabs.register`, id `@local/dsh-remote-machine`, kind
+`remote-machine`, priority `extension`, with a guide entry), its body in the `sidebar.right.pane.tab` slot,
+and a `tool.call.toolview` card for `computer_screenshot`.
+
+- The tab shows one computer at a time (selector over the configured ids): reachability from `hello`,
+  capabilities and why input is unavailable, and this DSH session's screenshots of that computer — each
+  labelled with computer id, capture time, `capture_id`, image and screen sizes and `frame_scale`, and
+  marked as a still, not a live view. **截图** takes a new one for the panel only (not sent to the model).
+  Switching computers drops the previous picture and status immediately; late replies for the previous
+  computer are ignored. While visible it polls the screenshot list every 3 s, so the model's screenshots
+  appear there.
+- The tool card shows a one-line summary, a thumbnail (while the capture is still in memory) and a
+  button that opens the tab on that computer (`sidebarRight.openTab('remote-machine', { params })`).
+
+Routes (all behind DSH's cookie/origin check; JSON errors are `{ error: { code, message } }`):
+
+| route | does |
+| --- | --- |
+| `GET /api/remote-machine/computers` | configured computers, capabilities, input reason; no transport details |
+| `GET /api/remote-machine/status?computer=` | `hello` on that computer: `reachable`, host identity, Cua service, or the error |
+| `GET /api/remote-machine/screenshots?session=&computer=` | metadata of the kept screenshots (no bytes) |
+| `GET /api/remote-machine/screenshot?session=&computer=&capture=` | the PNG from memory (`private, no-store`, `nosniff`, sandbox CSP); 404 once it has been dropped |
+| `POST /api/remote-machine/capture` `{session, computer_id}` | panel refresh: new screenshot kept for that session |
+
+Screenshots stay in host memory (last 5 per DSH session and computer) and are never written to disk by
+the plugin. The routes take the session id from the browser; any client that passes DSH's auth can read
+any session's screenshots, which is the same trust boundary as the rest of the DSH web API.
 
 ## SSH transport
 
@@ -94,11 +132,17 @@ cua-driver 0.30.4, `dsh-cua-driver.service` active) with `npm run test:live`:
   start/status (exit code, UTF-8 output) and a `confirmed` cancel, file round trip of
   `报告 目录/第 1 份 notes.txt`, `computer_cua_call list_windows`, and `click` refused as
   `capability_unavailable`. Afterwards no test files, job directories or Cua sessions remain.
+- The panel routes against Omarchy (handlers called directly, without a DSH server): `status` reachable,
+  `capture` → a new 1512×950 capture, listed by `screenshots` and served as the same PNG bytes by
+  `screenshot`.
 
 Offline (`npm test`, no network): the same transport and agent are exercised through
 `test/fixtures/fake-ssh.mjs`, which runs the remote command locally under a temporary `HOME`, including
-a lost `exec_start` reply, an unreachable host, abort mid-call and hostile host names. The tools and the
-plugin entry run against it plus `test/fixtures/fake-cua-driver.py` (screenshot, schema, session end).
+a lost `exec_start` reply, an unreachable host, abort mid-call and hostile host names. The tools, the
+plugin entry and the panel routes run against it plus `test/fixtures/fake-cua-driver.py` (screenshot,
+schema, session end). `test/client.test.mjs` loads `client.js` through a stand-in
+`window.__ModuleLoader__` with a minimal React (createElement + hooks) and `fetch` wired to the real
+routes: it checks the registrations, the tab's status/refresh/switch behaviour and the tool card.
 
 Fixed while testing: a cancel whose SIGTERM landed between two supervisor polls was reported as
 `finished_before_cancel`; job output and agent state were world-readable; files created by
@@ -106,12 +150,15 @@ Fixed while testing: a cancel whose SIGTERM landed between two supervisor polls 
 
 Not usable yet:
 
-- Not yet loaded inside a running DSH: `package.json` has no `dsh` manifest (`dsh.bundle.patch`,
-  `dsh.client`) and there is no `cordis.patch.yml`, so DSH does not install the plugin yet. The entry is
-  only checked against a fake `ctx` (it assumes `ctx.tools.register` returns a disposer, or an object
-  with `dispose`).
-- No right-panel `client.js` and no `/api/remote-machine/...` routes: screenshots reach the model as
-  attachments, and are kept in memory for a panel, but nothing shows them there yet.
+- Not yet installed into or loaded by a running DSH. The manifest, `cordis.patch.yml`, the entry, the
+  routes and `client.js` follow the host API shapes used by `../canvas-plugin` (which does load), but
+  here they are only checked against fake `ctx` objects and a stand-in React. Unverified until a real
+  install: that `sidebarRight.openTab(kind, { params })` hands `params.computer_id` to the tab (the card
+  also tells the tab directly, so the tab switches either way), that `exec.agent.id` equals the
+  `sessionId` the tab receives (the panel only finds the model's screenshots if it does), and how the
+  real React renders the hand-written components.
+- To install, a profile has to depend on this package and list it in its bundles, with the
+  `computers` config; that is not done here (this repository does not touch `~/.dsh`).
 - Cua input on Omarchy is known to fail (`production Hyprland input plugin is unavailable`), so input
   tools are only exercised as `capability_unavailable`. Of the Cua tools only `get_desktop_state` and
   `list_windows` have run on a real machine.

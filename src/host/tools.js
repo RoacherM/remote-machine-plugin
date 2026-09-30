@@ -145,6 +145,59 @@ export function createRemoteMachine({ computers, transport, attachments }) {
     shots.set(key, list);
   }
 
+  // Takes one screenshot for `session` and keeps it in memory; returns the frame metadata and the PNG.
+  // Used by computer_screenshot (which also attaches it for the model) and by the panel's refresh.
+  async function capture(session, computer, { signal, maxImageDimension } = {}) {
+    requireCapability(computer, 'screenshot', 'take screenshots (no Cua driver is configured)');
+    const shot = await call(computer, {
+      op: 'screenshot', session: cuaSessionFor(session, computer), cua_path: computer.cua.path,
+      max_image_dimension: maxImageDimension ?? DEFAULT_IMAGE_DIMENSION,
+    }, { signal }, 90_000);
+    const meta = shot.meta ?? {};
+    if (!meta.capture_id) throw new ToolError('cua_error', `computer ${computer.id}: the screenshot has no capture_id`);
+    const png = Buffer.from(shot.png_b64, 'base64');
+    if (imageMediaType(png) !== 'image/png') throw new ToolError('invalid_image', `computer ${computer.id}: the screenshot is not a PNG`);
+    const value = {
+      computer_id: computer.id,
+      capture_id: meta.capture_id,
+      captured_at: new Date(shot.time_ms).toISOString(),
+      image: { width: meta.screenshot_width, height: meta.screenshot_height, bytes: png.length },
+      screen: { width: meta.screen_width, height: meta.screen_height },
+      frame_scale: meta.frame_scale,
+      scale_factor: meta.scale_factor,
+      windows: (meta.windows ?? []).map((w) => ({ window_id: w.window_id, pid: w.pid, app_name: w.app_name, title: w.title, bounds: w.bounds })),
+    };
+    remember(session, { ...value, png });
+    return { value, png };
+  }
+
+  // `hello` on one computer: `{ reachable: true, host, cua? }` or `{ reachable: false, error }`; never throws
+  // for transport or agent failures.
+  async function probe(computer, signal) {
+    try {
+      const hello = await transport.call(computer, {
+        op: 'hello', cua_path: computer.cua?.path, cua_service: computer.cua?.service, cua_socket: computer.cua?.socket,
+      }, { signal, timeoutMs: PROBE_TIMEOUT_MS });
+      return {
+        reachable: true,
+        host: { hostname: hello.hostname, user: hello.user, system: hello.system, machine: hello.machine, python: hello.python },
+        ...(computer.cua ? { cua: hello.cua } : {}),
+      };
+    } catch (error) {
+      const failure = remoteFailure(computer, error);
+      return { reachable: false, error: { code: failure.code ?? 'error', message: failure.message } };
+    }
+  }
+
+  // What the panel and computer_list show about a computer without contacting it (no transport details).
+  function describe(computer) {
+    return {
+      id: computer.id, name: computer.name, platform: computer.platform, capabilities: { ...computer.capabilities },
+      ...(computer.inputUnavailableReason && !computer.capabilities.input ? { input_unavailable_reason: computer.inputUnavailableReason } : {}),
+      work_root: computer.workRoot, file_roots: computer.fileRoots,
+    };
+  }
+
   const tools = [
     {
       name: 'computer_list',
@@ -162,27 +215,10 @@ export function createRemoteMachine({ computers, transport, attachments }) {
           : 'No computers are configured.')],
       },
       async execute(args, exec) {
-        const probe = args?.probe !== false;
-        const list = await Promise.all(computers.map(async (computer) => {
-          const entry = {
-            id: computer.id, name: computer.name, platform: computer.platform, capabilities: { ...computer.capabilities },
-            work_root: computer.workRoot, file_roots: computer.fileRoots,
-          };
-          if (!probe) return entry;
-          try {
-            const hello = await transport.call(computer, {
-              op: 'hello', cua_path: computer.cua?.path, cua_service: computer.cua?.service, cua_socket: computer.cua?.socket,
-            }, { signal: exec?.signal, timeoutMs: PROBE_TIMEOUT_MS });
-            return {
-              ...entry, reachable: true,
-              host: { hostname: hello.hostname, user: hello.user, system: hello.system, machine: hello.machine, python: hello.python },
-              ...(computer.cua ? { cua: hello.cua } : {}),
-            };
-          } catch (error) {
-            const failure = remoteFailure(computer, error);
-            return { ...entry, reachable: false, error: { code: failure.code ?? 'error', message: failure.message } };
-          }
-        }));
+        const contact = args?.probe !== false;
+        const list = await Promise.all(computers.map(async (computer) => ({
+          ...describe(computer), ...(contact ? await probe(computer, exec?.signal) : {}),
+        })));
         return { computers: list };
       },
     },
@@ -211,27 +247,9 @@ export function createRemoteMachine({ computers, transport, attachments }) {
         const computer = computerOf(args);
         requireCapability(computer, 'screenshot', 'take screenshots (no Cua driver is configured)');
         const session = sessionOf(exec);
-        const shot = await call(computer, {
-          op: 'screenshot', session: cuaSessionFor(session, computer), cua_path: computer.cua.path,
-          max_image_dimension: args.max_image_dimension ?? DEFAULT_IMAGE_DIMENSION,
-        }, exec, 90_000);
-        const meta = shot.meta ?? {};
-        if (!meta.capture_id) throw new ToolError('cua_error', `computer ${computer.id}: the screenshot has no capture_id`);
-        const png = Buffer.from(shot.png_b64, 'base64');
-        const attachment = await saveImage(png, `${computer.id}-${meta.capture_id}.png`);
-        const value = {
-          computer_id: computer.id,
-          capture_id: meta.capture_id,
-          captured_at: new Date(shot.time_ms).toISOString(),
-          image: { width: meta.screenshot_width, height: meta.screenshot_height, bytes: png.length },
-          screen: { width: meta.screen_width, height: meta.screen_height },
-          frame_scale: meta.frame_scale,
-          scale_factor: meta.scale_factor,
-          windows: (meta.windows ?? []).map((w) => ({ window_id: w.window_id, pid: w.pid, app_name: w.app_name, title: w.title, bounds: w.bounds })),
-          attachment,
-        };
-        remember(session, { ...value, png });
-        return value;
+        const { value, png } = await capture(session, computer, { signal: exec?.signal, maxImageDimension: args.max_image_dimension });
+        const attachment = await saveImage(png, `${computer.id}-${value.capture_id}.png`);
+        return { ...value, attachment };
       },
     },
 
@@ -460,6 +478,16 @@ export function createRemoteMachine({ computers, transport, attachments }) {
 
   return {
     tools,
+    /** Configured computers as the panel shows them; nothing is contacted. */
+    computers: () => computers.map(describe),
+    /** The configured computer with this id; throws `unknown_computer` otherwise (never another computer). */
+    computer: (id) => computerOf({ computer_id: id }),
+    probe,
+    /** Panel refresh: a screenshot kept for the panel only (no attachment, nothing sent to the model). */
+    async capture(session, computerId, options) {
+      if (typeof session !== 'string' || !session) throw new ToolError('no_session', 'a screenshot needs a DSH session');
+      return (await capture(session, computerOf({ computer_id: computerId }), options)).value;
+    },
     /** Screenshots of one DSH session on one computer, oldest first (for the right-side panel). */
     screenshots(session, computerId) {
       return [...(shots.get(`${session}\0${computerId}`) ?? [])];

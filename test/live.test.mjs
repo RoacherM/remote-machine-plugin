@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { after, describe, test } from 'node:test';
 import { normalizeComputers } from '../src/host/config.js';
+import { remoteMachineRoutes } from '../src/host/routes.js';
 import { createRemoteMachine } from '../src/host/tools.js';
 import { createTransport } from '../src/host/transport.js';
 
@@ -147,6 +148,25 @@ describe(`live against ssh ${HOST}`, { skip: !LIVE && 'set DSH_REMOTE_LIVE=1 to 
       assert.ok(value.capture_id && value.frame_scale > 0 && value.screen.width > 0 && value.image.width > 0);
       assert.equal(machine.screenshots(exec.agent.id, 'omarchy').at(-1).capture_id, value.capture_id);
       console.log(`# tool screenshot ${value.image.width}x${value.image.height} of ${value.screen.width}x${value.screen.height}, ${value.windows.length} window(s)`);
+    });
+
+    test('panel routes: status, refresh capture and the PNG served from memory', async () => {
+      const routes = new Map(remoteMachineRoutes(machine).map((route) => [route.path, route.fetch]));
+      const get = (name, query) => routes.get(`/api/remote-machine/${name}`)(new Request(`http://dsh.test/api/remote-machine/${name}?${new URLSearchParams(query)}`));
+      const status = await (await get('status', { computer: 'omarchy' })).json();
+      assert.equal(status.reachable, true, JSON.stringify(status.error));
+      const response = await routes.get('/api/remote-machine/capture')(new Request('http://dsh.test/api/remote-machine/capture', {
+        method: 'POST', body: JSON.stringify({ session: exec.agent.id, computer_id: 'omarchy' }),
+      }));
+      const shot = await response.json();
+      assert.equal(response.status, 200, JSON.stringify(shot));
+      assert.ok(shot.capture_id && shot.frame_scale > 0 && shot.attachment === undefined);
+      const { screenshots } = await (await get('screenshots', { session: exec.agent.id, computer: 'omarchy' })).json();
+      assert.equal(screenshots.at(-1).capture_id, shot.capture_id);
+      const image = await get('screenshot', { session: exec.agent.id, computer: 'omarchy', capture: shot.capture_id });
+      assert.equal(image.headers.get('content-type'), 'image/png');
+      assert.equal((await image.arrayBuffer()).byteLength, shot.image.bytes);
+      console.log(`# panel capture ${shot.capture_id} at ${shot.captured_at}, ${shot.image.width}x${shot.image.height}`);
     });
 
     test('computer_exec_* : output, exit code and a confirmed cancel', async () => {

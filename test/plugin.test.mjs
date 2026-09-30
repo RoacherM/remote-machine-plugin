@@ -1,12 +1,13 @@
 // Offline: the plugin entry and the computer_* tools against a fake ssh (running the real agent locally
 // under a temporary HOME) and a fake cua-driver.
 import assert from 'node:assert/strict';
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 import * as plugin from '../index.js';
 import { normalizeComputers } from '../src/host/config.js';
+import { remoteMachineRoutes, ROUTE_PREFIX } from '../src/host/routes.js';
 import { createRemoteMachine } from '../src/host/tools.js';
 import { createTransport } from '../src/host/transport.js';
 
@@ -67,11 +68,21 @@ test('config: defaults, capabilities and refusals', () => {
   }
 });
 
-test('plugin entry registers every tool through ctx.effect and disposes them', () => {
+test('plugin entry registers every tool and panel route through ctx.effect and disposes them', () => {
   const registered = [];
+  const routes = new Map();
   const disposers = [];
   const ctx = {
     tools: { register: (tool) => { registered.push(tool.name); return () => registered.splice(registered.indexOf(tool.name), 1); } },
+    connection: {
+      fetch: {
+        register: (route) => {
+          assert.ok(!routes.has(route.path), `route ${route.path} registered twice`);
+          routes.set(route.path, route);
+          return () => routes.delete(route.path);
+        },
+      },
+    },
     get: () => attachments,
     effect: (setup, label) => { assert.equal(typeof label, 'string'); disposers.push(setup()); },
   };
@@ -82,8 +93,30 @@ test('plugin entry registers every tool through ctx.effect and disposes them', (
     'computer_cua_call', 'computer_exec_cancel', 'computer_exec_start', 'computer_exec_status',
     'computer_file_read', 'computer_file_write', 'computer_list', 'computer_screenshot',
   ]);
+  assert.deepEqual([...routes.keys()].sort(), ['capture', 'computers', 'screenshot', 'screenshots', 'status'].map((name) => `${ROUTE_PREFIX}/${name}`));
+  for (const route of routes.values()) {
+    assert.equal(route.requestBody, 'buffered');
+    assert.equal(route.methods.length, 1);
+    assert.equal(typeof route.fetch, 'function');
+  }
   for (const dispose of disposers) dispose();
   assert.deepEqual(registered, []);
+  assert.equal(routes.size, 0);
+});
+
+test('package manifest: DSH bundle patch and web client', () => {
+  const root = new URL('../', import.meta.url);
+  const pkg = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'));
+  assert.equal(pkg.name, '@local/dsh-remote-machine');
+  assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml');
+  assert.equal(pkg.dsh.client.platform, 'web');
+  assert.deepEqual(pkg.dsh.client.inject, ['@deepseek-ai/dsh-client-locale', '@deepseek-ai/dsh-client-ui-sidebar-right']);
+  assert.equal(pkg.exports['.'], './index.js');
+  assert.equal(pkg.exports['./client'], './client.js');
+  const patch = readFileSync(new URL('cordis.patch.yml', root), 'utf8');
+  assert.match(patch, /^- insert:\n {4}- id: dsh-remote-machine\n {6}name: '@local\/dsh-remote-machine'\n$/);
+  for (const file of pkg.files) assert.ok(existsSync(new URL(file, root)), `packaged file ${file} exists`);
+  assert.equal(Object.keys(pkg.dependencies ?? {}).length, 0, 'no runtime npm dependencies');
 });
 
 test('computer_list probes each computer and reports the unreachable one as such', async () => {
@@ -190,6 +223,64 @@ test('cua_call: whitelist, upstream schema, input capability, plugin-owned sessi
   const shot = await run('computer_cua_call', { computer_id: 'box', tool: 'get_desktop_state', arguments: {} });
   assert.equal(shot.attachment.mediaType, 'image/png');
   await rejectsWith(run('computer_cua_call', { computer_id: 'offline', tool: 'list_windows' }), 'capability_unavailable');
+});
+
+test('panel routes: computers, status, refresh capture, screenshots by session and computer', async () => {
+  const handlers = new Map(remoteMachineRoutes(machine).map((route) => [`${route.method} ${route.path}`, route.fetch]));
+  const fetchRoute = async (method, path, { query = {}, body } = {}) => {
+    const url = new URL(`http://dsh.test${ROUTE_PREFIX}/${path}`);
+    for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
+    const request = new Request(url, { method, ...(body === undefined ? {} : { body: typeof body === 'string' ? body : JSON.stringify(body) }) });
+    return handlers.get(`${method} ${ROUTE_PREFIX}/${path}`)(request);
+  };
+  const jsonOf = async (response, status = 200) => {
+    const value = await response.json();
+    assert.equal(response.status, status, JSON.stringify(value));
+    return value;
+  };
+
+  const { computers } = await jsonOf(await fetchRoute('GET', 'computers'));
+  assert.deepEqual(computers.map((c) => c.id), ['box', 'offline']);
+  assert.equal(computers[0].input_unavailable_reason, 'production Hyprland input plugin is unavailable');
+  assert.ok(!JSON.stringify(computers).includes('"host"'), 'transport details stay on the host');
+
+  const ready = await jsonOf(await fetchRoute('GET', 'status', { query: { computer: 'box' } }));
+  assert.equal(ready.reachable, true);
+  assert.equal(ready.computer_id, 'box');
+  const down = await jsonOf(await fetchRoute('GET', 'status', { query: { computer: 'offline' } }));
+  assert.equal(down.reachable, false);
+  assert.equal(down.error.code, 'transport_error');
+  assert.equal((await jsonOf(await fetchRoute('GET', 'status', { query: { computer: 'nope' } }), 404)).error.code, 'unknown_computer');
+
+  const before = machine.screenshots('dsh-session-a', 'box').length;
+  const shot = await jsonOf(await fetchRoute('POST', 'capture', { body: { session: 'dsh-session-a', computer_id: 'box' } }));
+  assert.equal(shot.computer_id, 'box');
+  assert.notEqual(shot.capture_id, 'capture_fake_1', 'a new capture, not the earlier one');
+  assert.equal(shot.frame_scale, 2);
+  assert.equal(shot.attachment, undefined, 'a panel refresh is not sent to the model');
+  assert.equal(machine.screenshots('dsh-session-a', 'box').length, before + 1);
+
+  const listed = await jsonOf(await fetchRoute('GET', 'screenshots', { query: { session: 'dsh-session-a', computer: 'box' } }));
+  assert.equal(listed.screenshots.at(-1).capture_id, shot.capture_id);
+  assert.ok(listed.screenshots.every((item) => item.png === undefined && item.computer_id === 'box'));
+  const other = await jsonOf(await fetchRoute('GET', 'screenshots', { query: { session: 'dsh-session-b', computer: 'box' } }));
+  assert.deepEqual(other.screenshots, [], 'screenshots stay with their DSH session');
+
+  const image = await fetchRoute('GET', 'screenshot', { query: { session: 'dsh-session-a', computer: 'box', capture: shot.capture_id } });
+  assert.equal(image.status, 200);
+  assert.equal(image.headers.get('content-type'), 'image/png');
+  assert.equal(image.headers.get('cache-control'), 'private, no-store');
+  const bytes = Buffer.from(await image.arrayBuffer());
+  assert.equal(bytes.readUInt32BE(16), 4);
+  assert.equal(bytes.length, shot.image.bytes);
+  await jsonOf(await fetchRoute('GET', 'screenshot', { query: { session: 'dsh-session-b', computer: 'box', capture: shot.capture_id } }), 404);
+
+  assert.equal((await jsonOf(await fetchRoute('POST', 'capture', { body: { session: 'dsh-session-a', computer_id: 'offline' } }), 409)).error.code, 'capability_unavailable');
+  await jsonOf(await fetchRoute('POST', 'capture', { body: 'not json' }), 400);
+  await jsonOf(await fetchRoute('POST', 'capture', { body: { computer_id: 'box' } }), 400);
+  await jsonOf(await fetchRoute('GET', 'screenshots', { query: { computer: 'box' } }), 400);
+  const wrongMethod = await handlers.get(`GET ${ROUTE_PREFIX}/computers`)(new Request(`http://dsh.test${ROUTE_PREFIX}/computers`, { method: 'DELETE' }));
+  assert.equal(wrongMethod.status, 405);
 });
 
 test('dispose ends the Cua sessions the plugin opened', async () => {

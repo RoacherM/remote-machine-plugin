@@ -5,8 +5,31 @@
   "private": true,
   "type": "module",
   "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "src/host",
+    "src/remote/agent.py"
+  ],
   "scripts": {
     "test": "node --test --test-force-exit test/",
     "test:live": "DSH_REMOTE_LIVE=1 node --test --test-force-exit test/"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ]
+    }
   }
 }

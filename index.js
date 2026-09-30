@@ -1,5 +1,7 @@
-// DSH plugin entry: registers the `computer_*` tools for the computers in `config.computers`.
+// DSH plugin entry: registers the `computer_*` tools for the computers in `config.computers`, and the
+// `/api/remote-machine/*` routes the right-side panel (client.js) reads screenshots from.
 import { normalizeComputers } from './src/host/config.js';
+import { registerRoutes } from './src/host/routes.js';
 import { createRemoteMachine } from './src/host/tools.js';
 import { createTransport } from './src/host/transport.js';
 
@@ -18,6 +20,7 @@ export function apply(ctx, config = {}) {
       return typeof registration === 'function' ? registration : () => registration?.dispose?.();
     }, `remote-machine tool ${tool.name}`);
   }
+  registerRoutes(ctx, machine);
   ctx.effect(() => () => {
     void machine.dispose();
   }, 'remote-machine cua sessions');
