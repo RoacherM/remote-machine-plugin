@@ -216,8 +216,13 @@ TextEdit instance opened on a test file):
 | `click`, `double_click`, `right_click`, `scroll` with `x,y` | posted in the background (`unverifiable`: the Driver cannot read back their effect); need a `get_window_state` screenshot of the window first, else `screenshot_context_missing` |
 | `hotkey cmd+a` in the background | `unverifiable`, no effect seen; the Driver suggests `delivery_mode: foreground`, not tried because it takes focus on a Mac someone is using |
 
-`capabilities.input` for `macmini` is still `false` in the profile until these are rerun through the
-plugin on an unlocked screen.
+Rerun through the plugin on an unlocked screen (2026-10-03, real DSH, `computer_cua_call` on a new
+TextEdit instance opened on a test file): `type_text` on the text area with Chinese, `press_key return`
+and `type_text` without an element were all `confirmed` by readback; a background `click` at window
+pixel `40,76` reported `unverifiable` but moved the caret exactly there (the next `type_text` landed
+after the first character). The pointer was not moved. `capabilities.input` for `macmini` is now
+`true` in the desktop profile; the config change applied by disabling and re-enabling the bundle,
+without a DSH restart. Background `hotkey` and `delivery_mode: foreground` remain untested.
 
 After the DSH restart (2026-10-01) through the real tools: `launch_app` on `macmini` works with input off;
 `computer_screenshot` returns lossless JSON with `frame_scale 1.6 (derived …)`. The Mac mini had been
